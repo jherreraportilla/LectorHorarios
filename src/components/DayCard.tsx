@@ -26,9 +26,33 @@ const BADGE_STYLES: Record<DayStatus, string> = {
 
 interface Props {
   day: DaySchedule;
+  compact?: boolean;
 }
 
-export function DayCard({ day }: Props) {
+export function DayCard({ day, compact = false }: Props) {
+  if (compact) {
+    return (
+      <div
+        className={`flex flex-col gap-1 rounded-lg border p-2 min-w-0 text-xs ${CARD_STYLES[day.status]}`}
+      >
+        <div className="flex items-baseline justify-between gap-1">
+          <span className="font-semibold">{day.date || day.dayName}</span>
+          <span
+            className={`inline-block text-[10px] font-medium px-1.5 py-0 rounded-full ${BADGE_STYLES[day.status]}`}
+          >
+            {STATUS_LABELS[day.status]}
+          </span>
+        </div>
+        {day.status === 'work' && day.timeRange && (
+          <div className="font-mono text-[11px] leading-tight">{day.timeRange}</div>
+        )}
+        {day.status === 'other' && day.rawCode && (
+          <div className="font-mono text-[10px] opacity-80 break-words">{day.rawCode}</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div
       className={`flex flex-col gap-2 rounded-xl border p-4 min-w-0 ${CARD_STYLES[day.status]}`}

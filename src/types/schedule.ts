@@ -1,5 +1,7 @@
 export type DayStatus = 'work' | 'off' | 'vacation' | 'sick' | 'other';
 
+export type ScheduleFormat = 'weekly' | 'monthly';
+
 export interface DaySchedule {
   dayName: string;
   date: string;
@@ -13,4 +15,5 @@ export interface WeekSchedule {
   weekRange: string;
   totalHours: string;
   days: DaySchedule[];
+  format: ScheduleFormat;
 }

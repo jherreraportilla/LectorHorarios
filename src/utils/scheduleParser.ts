@@ -1,4 +1,9 @@
-import type { DaySchedule, DayStatus, WeekSchedule } from '../types/schedule';
+import type {
+  DaySchedule,
+  DayStatus,
+  ScheduleFormat,
+  WeekSchedule,
+} from '../types/schedule';
 import type { PositionedText } from './pdfParser';
 
 const DAY_NAMES_ES = [
@@ -201,7 +206,6 @@ function buildColumnRanges(
   return { ranges, nameRight, totalLeft };
 }
 
-// Filas que parecen de empleado: empiezan con un ID numérico de 6+ dígitos.
 function findEmployeeRows(rows: Row[]): Row[] {
   return rows.filter((row) => {
     const first = row.items[0]?.str?.trim() ?? '';
@@ -228,8 +232,6 @@ function findEmployeeRow(empRows: Row[], query: string): Row | null {
   return best?.row ?? null;
 }
 
-// Banda Y del empleado: desde su fila hasta justo encima del siguiente empleado.
-// Captura las líneas extra de los turnos partidos (DL + horario apilados).
 function getEmployeeBand(
   empRow: Row,
   allEmpRows: Row[],
@@ -272,43 +274,72 @@ function parseCellText(text: string): {
   return { status: 'other', rawCode: trimmed };
 }
 
-function extractWeekRange(rows: Row[]): string {
+// Detecta el formato a partir del título del PDF:
+// - Semanal: "X de mes - Y de mes de YYYY"
+// - Mensual: solo "mes de YYYY"
+function extractScheduleHeader(rows: Row[]): { weekRange: string; format: ScheduleFormat } {
   const months =
     'enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|ene|feb|mar|abr|may|jun|jul|ago|sep|sept|oct|nov|dic';
   const rangeRe = new RegExp(
     `(?<!\\d)(?:del\\s+)?\\d{1,2}(?:\\s+de\\s+(?:${months}))?\\s*(?:[-–—]|al)\\s*\\d{1,2}\\s+de\\s+(?:${months})(?:\\s+(?:de\\s+)?\\d{4})?`,
     'i'
   );
-  const singleRe = new RegExp(
-    `(?<!\\d)\\d{1,2}\\s+de\\s+(?:${months})(?:\\s+(?:de\\s+)?\\d{4})?`,
-    'i'
-  );
+  const monthYearRe = new RegExp(`(?<![a-zñáéíóú])(?:${months})\\s+de\\s+\\d{4}`, 'i');
+
   for (const row of rows) {
     const text = row.items.map((i) => i.str).join(' ');
     const m = text.match(rangeRe);
-    if (m) return m[0].trim();
+    if (m) return { weekRange: m[0].trim(), format: 'weekly' };
   }
   for (const row of rows) {
     const text = row.items.map((i) => i.str).join(' ');
-    const m = text.match(singleRe);
-    if (m) return m[0].trim();
+    const m = text.match(monthYearRe);
+    if (m) return { weekRange: m[0].trim(), format: 'monthly' };
   }
-  return '';
+  return { weekRange: '', format: 'weekly' };
 }
 
+// Devuelve un Date del mes detectado (día 1 si solo viene "mes de YYYY").
 function parseWeekStart(weekRange: string): Date | null {
   if (!weekRange) return null;
   const normRange = normalize(weekRange);
-  const firstNum = normRange.match(/(?<!\d)(\d{1,2})\b/);
   const monthRe = new RegExp(`\\b(${Object.keys(MONTHS_ES).join('|')})\\b`, 'i');
   const monthMatch = normRange.match(monthRe);
   const yearMatch = normRange.match(/\b(20\d{2})\b/);
-  if (!firstNum || !monthMatch) return null;
-  const day = parseInt(firstNum[1], 10);
+  if (!monthMatch) return null;
   const monthIdx = MONTHS_ES[monthMatch[1].toLowerCase()];
+  if (monthIdx === undefined) return null;
   const year = yearMatch ? parseInt(yearMatch[1], 10) : new Date().getFullYear();
-  if (monthIdx === undefined || day < 1 || day > 31) return null;
+  const dayMatch = normRange.match(/(?<!\d)(\d{1,2})\b/);
+  const day = dayMatch ? parseInt(dayMatch[1], 10) : 1;
+  if (day < 1 || day > 31) return null;
   return new Date(year, monthIdx, day);
+}
+
+// Determina la fecha real de la primera columna, ajustando el mes si el primer
+// día visible es alto (e.g. "31") y el header dice "junio de 2026".
+function resolveFirstColumnDate(
+  weekStart: Date | null,
+  firstCellRaw: string,
+  format: ScheduleFormat
+): Date | null {
+  if (!weekStart) return null;
+  const dayMatch = firstCellRaw.match(/(?<!\d)(\d{1,2})(?!\d)/);
+  if (!dayMatch) return weekStart;
+  const cellDay = parseInt(dayMatch[1], 10);
+
+  if (format === 'monthly' && cellDay > 20 && weekStart.getDate() <= 7) {
+    const prev = new Date(weekStart);
+    prev.setDate(1);
+    prev.setMonth(prev.getMonth() - 1);
+    prev.setDate(cellDay);
+    return prev;
+  }
+
+  if (cellDay === weekStart.getDate()) return weekStart;
+  const adjusted = new Date(weekStart);
+  adjusted.setDate(cellDay);
+  return adjusted;
 }
 
 function formatShortDate(d: Date): string {
@@ -355,7 +386,6 @@ export function parseSchedule(items: PositionedText[], query: string): WeekSched
       } else if (dayIndexFor(text) !== null) {
         continue;
       }
-      // Quita texto residual tipo "Hor. Real" si aparece pegado a la fecha.
       text = text.replace(/Hor\.?\s*Real/i, '').trim();
       if (!text) continue;
       const cx = item.x + item.width / 2;
@@ -398,8 +428,13 @@ export function parseSchedule(items: PositionedText[], query: string): WeekSched
     (cellsByPos[range.position] ??= []).push(item);
   }
 
-  const weekRange = extractWeekRange(rows);
-  const weekStart = parseWeekStart(weekRange);
+  const { weekRange, format: headerFormat } = extractScheduleHeader(rows);
+  const format: ScheduleFormat =
+    headerFormat === 'monthly' || header.columns.length > 14 ? 'monthly' : 'weekly';
+
+  const baseWeekStart = parseWeekStart(weekRange);
+  const firstCellRaw = (datesByPos[0] ?? '').trim();
+  const firstDate = resolveFirstColumnDate(baseWeekStart, firstCellRaw, format);
 
   const days: DaySchedule[] = header.columns.map((col, i) => {
     const cellItems = (cellsByPos[col.position] ?? []).sort(
@@ -413,10 +448,9 @@ export function parseSchedule(items: PositionedText[], query: string): WeekSched
     const parsed = parseCellText(cellText);
 
     let date = (datesByPos[col.position] ?? '').trim();
-    if (weekStart) {
-      const computed = new Date(weekStart);
+    if (firstDate) {
+      const computed = new Date(firstDate);
       computed.setDate(computed.getDate() + i);
-      // Si solo hay un número, completamos con mes calculado.
       if (!date || /^\d{1,2}$/.test(date)) {
         date = formatShortDate(computed);
       }
@@ -436,5 +470,6 @@ export function parseSchedule(items: PositionedText[], query: string): WeekSched
     weekRange,
     totalHours,
     days,
+    format,
   };
 }
