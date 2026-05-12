@@ -241,8 +241,12 @@ function getEmployeeBand(
     .filter((r) => r.page === empRow.page)
     .sort((a, b) => b.y - a.y);
   const idx = samePage.indexOf(empRow);
-  const yTop = empRow.y + 8;
-  const yBottom = idx >= 0 && idx + 1 < samePage.length ? samePage[idx + 1].y : -Infinity;
+  const prev = idx > 0 ? samePage[idx - 1] : null;
+  const next = idx >= 0 && idx + 1 < samePage.length ? samePage[idx + 1] : null;
+  // Banda acotada por el punto medio con los empleados vecinos para evitar
+  // arrastrar texto de filas contiguas (p. ej. un VAC de otro empleado).
+  const yTop = prev ? (empRow.y + prev.y) / 2 : empRow.y + 8;
+  const yBottom = next ? (empRow.y + next.y) / 2 : -Infinity;
   return items.filter(
     (i) => i.page === empRow.page && i.y > yBottom && i.y <= yTop
   );
