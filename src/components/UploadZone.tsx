@@ -5,6 +5,15 @@ interface Props {
   disabled?: boolean;
 }
 
+const ACCEPTED_TYPES = ['application/pdf', 'image/jpeg', 'image/png'];
+const ACCEPTED_EXTS = ['.pdf', '.jpg', '.jpeg', '.png'];
+
+function isAccepted(file: File): boolean {
+  if (ACCEPTED_TYPES.includes(file.type)) return true;
+  const lower = file.name.toLowerCase();
+  return ACCEPTED_EXTS.some((ext) => lower.endsWith(ext));
+}
+
 export function UploadZone({ onFile, disabled }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -13,9 +22,7 @@ export function UploadZone({ onFile, disabled }: Props) {
     (files: FileList | null) => {
       if (!files || files.length === 0) return;
       const file = files[0];
-      if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-        return;
-      }
+      if (!isAccepted(file)) return;
       onFile(file);
     },
     [onFile]
@@ -49,7 +56,7 @@ export function UploadZone({ onFile, disabled }: Props) {
       <input
         ref={inputRef}
         type="file"
-        accept="application/pdf"
+        accept="application/pdf,image/jpeg,image/png"
         className="hidden"
         onChange={(e) => {
           handleFiles(e.target.files);
@@ -57,9 +64,9 @@ export function UploadZone({ onFile, disabled }: Props) {
         }}
       />
       <p className="text-gray-700">
-        <span className="font-medium">Haz clic para seleccionar</span> o arrastra el PDF aquí
+        <span className="font-medium">Haz clic para seleccionar</span> o arrastra el archivo aquí
       </p>
-      <p className="text-sm text-gray-500 mt-1">Cuadrante semanal SISQUAL en PDF</p>
+      <p className="text-sm text-gray-500 mt-1">PDF, JPG o PNG del cuadrante SISQUAL</p>
     </div>
   );
 }
