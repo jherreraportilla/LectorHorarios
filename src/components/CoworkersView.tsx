@@ -88,25 +88,37 @@ function Chevron({ open }: { open: boolean }) {
 }
 
 function DayGroup({ group }: { group: CoworkersByDay }) {
+  const [open, setOpen] = useState(false);
   return (
     <div className="space-y-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-800">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-baseline justify-between gap-2 text-left rounded-md hover:bg-gray-50 px-1 py-1 -mx-1"
+      >
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-800">
+          <Chevron open={open} />
           {group.dayName}
-          {group.date && <span className="ml-2 font-normal text-gray-500">{group.date}</span>}
+          {group.date && <span className="font-normal text-gray-500">{group.date}</span>}
+          <span className="font-normal text-gray-400">
+            · {group.hits.length}
+          </span>
         </h3>
         <span className="font-mono text-xs text-gray-600">{formatSegments(group.mySegments)}</span>
-      </div>
-      {group.hits.length === 0 ? (
-        <p className="text-xs italic text-gray-500">
-          Nadie con misma salida ni solape este día.
-        </p>
-      ) : (
-        <ul className="space-y-1">
-          {group.hits.map((hit) => (
-            <CoworkerRow key={`${hit.name}-${hit.match}`} hit={hit} />
-          ))}
-        </ul>
+      </button>
+      {open && (
+        group.hits.length === 0 ? (
+          <p className="text-xs italic text-gray-500 pl-5">
+            Nadie con misma salida ni solape este día.
+          </p>
+        ) : (
+          <ul className="space-y-1 pl-5">
+            {group.hits.map((hit) => (
+              <CoworkerRow key={`${hit.name}-${hit.match}`} hit={hit} />
+            ))}
+          </ul>
+        )
       )}
     </div>
   );
