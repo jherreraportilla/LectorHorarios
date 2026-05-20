@@ -190,7 +190,7 @@ function clusterIsTotals(items: BodyItem[]): boolean {
       const h = parseInt(m[1], 10);
       if (h >= 24) totalLike++;
       else dayLike++;
-    } else if (/^(VAC|DL|ENFE?|FF|FT)$/i.test(s) || /^[+\-–—]$/.test(s)) {
+    } else if (/^(VAC|DL|DA|D|ENFE?|FF|FT)$/i.test(s) || /^[+\-–—]$/.test(s)) {
       dayLike++;
     }
   }
@@ -199,9 +199,9 @@ function clusterIsTotals(items: BodyItem[]): boolean {
 }
 
 function collectCellAnchorsFromBand(bandItems: PositionedText[], nameRight: number): BodyItem[] {
-  const CLOCK_TIME_RE = /^([01]?\d|2[0-3])[:.][0-5]\d$/;
+  const CLOCK_TIME_RE = /^([01]?\d|2[0-3])[:.\-][0-5]\d$/;
   const DASH_RE = /^[-–—]$/;
-  const CODE_RE = /^(VAC|DL|ENFE?|FF|FT)$/i;
+  const CODE_RE = /^(VAC|DL|DA|D|ENFE?|FF|FT)$/i;
 
   const sorted = bandItems
     .filter((it) => it.x + it.width / 2 >= nameRight)
@@ -315,12 +315,15 @@ function findDayColumnsByBody(
     sorted.pop();
   }
 
-  const columns: DayColumn[] = sorted.map((c, i) => ({
-    name: DAY_NAMES_ES[i % 7],
-    dayOfWeek: i % 7,
-    x: c.center,
-    position: i,
-  }));
+  const columns: DayColumn[] = sorted.map((c, i) => {
+    const dow = (i + 6) % 7;
+    return {
+      name: DAY_NAMES_ES[dow],
+      dayOfWeek: dow,
+      x: c.center,
+      position: i,
+    };
+  });
 
   const datesRow = findDatesRowAbove(rows, empRows[0]);
   return { headerRow: datesRow ?? empRows[0], columns };
@@ -339,6 +342,19 @@ function findDatesRowAbove(rows: Row[], firstEmpRow: Row): Row | null {
     if (count >= 3 && (!best || count > best.count)) best = { row, count };
   }
   return best?.row ?? null;
+}
+
+function bodyCellMinX(empRows: Row[]): number | null {
+  let min = Infinity;
+  for (const row of empRows) {
+    for (const item of row.items) {
+      if (looksLikeShiftOrStatus(item.str)) {
+        const cx = item.x + item.width / 2;
+        if (cx < min) min = cx;
+      }
+    }
+  }
+  return Number.isFinite(min) ? min : null;
 }
 
 function findDayColumnsByDateRowExtended(
@@ -361,10 +377,15 @@ function findDayColumnsByDateRowExtended(
   const step = steps[Math.floor(steps.length / 2)];
   if (step <= 0) return null;
 
-  // Asumimos Dom-Dom (8 cols): la primera fecha visible suele estar en col 1.
-  // 1 col antes + n fechas + (8 - n - 1) col despues.
+  // Asumimos Dom-Dom (8 cols). Si el cuerpo tiene celdas más a la izquierda
+  // de la primera fecha visible, hay >1 col antes (OCR perdió fechas iniciales).
   const total = 8;
-  const beforeCount = 1;
+  const minBodyX = bodyCellMinX(empRows);
+  let beforeCount = 1;
+  if (minBodyX !== null && minBodyX < centers[0] - step / 2) {
+    const inferred = Math.round((centers[0] - minBodyX) / step);
+    beforeCount = Math.max(1, Math.min(total - dateItems.length, inferred));
+  }
   const afterCount = Math.max(0, total - dateItems.length - beforeCount);
 
   const allCenters: number[] = [];
@@ -372,12 +393,15 @@ function findDayColumnsByDateRowExtended(
   for (const c of centers) allCenters.push(c);
   for (let i = 1; i <= afterCount; i++) allCenters.push(centers[centers.length - 1] + step * i);
 
-  const columns: DayColumn[] = allCenters.map((c, i) => ({
-    name: DAY_NAMES_ES[i % 7],
-    dayOfWeek: i % 7,
-    x: c,
-    position: i,
-  }));
+  const columns: DayColumn[] = allCenters.map((c, i) => {
+    const dow = (i + 6) % 7;
+    return {
+      name: DAY_NAMES_ES[dow],
+      dayOfWeek: dow,
+      x: c,
+      position: i,
+    };
+  });
 
   return { headerRow: dateRow, columns };
 }
@@ -441,11 +465,91 @@ function buildColumnRanges(
   return { ranges, nameRight, totalLeft };
 }
 
+const SHIFT_CELL_RE = /^\d{1,2}[:.\-]\d{2}$/;
+const STATUS_CELL_RE = /^(VAC|DL|DA|LD|CC|VAL|BAJA|IT|FEST|FE|LE)$/i;
+
+function looksLikeShiftOrStatus(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  if (SHIFT_CELL_RE.test(t)) return true;
+  if (STATUS_CELL_RE.test(t)) return true;
+  return false;
+}
+
+function looksLikeNameToken(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 3) return false;
+  if (/\d/.test(t)) return false;
+  const letters = t.replace(/[^A-Za-zÀ-ÿ]/g, '');
+  if (letters.length < 3) return false;
+  const upper = letters.replace(/[^A-ZÀ-Ý]/g, '');
+  return upper.length / letters.length >= 0.7;
+}
+
+function looksLikeEmployeeId(s: string): boolean {
+  if (/^\d{6,}/.test(s)) return true;
+  // IDs SISQUAL: 8 dígitos empezando por 20. OCR a veces mete € o letras
+  // entre los dígitos. Aceptamos cualquier token con >=5 dígitos.
+  if (!/^\d/.test(s)) return false;
+  const digits = (s.match(/\d/g) ?? []).length;
+  return digits >= 5;
+}
+
 function findEmployeeRows(rows: Row[]): Row[] {
   return rows.filter((row) => {
     const first = row.items[0]?.str?.trim() ?? '';
-    return /^\d{6,}/.test(first);
+    if (looksLikeEmployeeId(first)) return true;
+    if (!looksLikeNameToken(first)) return false;
+    let signals = 0;
+    for (const item of row.items) {
+      if (looksLikeShiftOrStatus(item.str)) {
+        signals++;
+        if (signals >= 2) return true;
+      }
+    }
+    return false;
   });
+}
+
+function levenshtein(a: string, a2: string): number {
+  if (a === a2) return 0;
+  if (!a.length) return a2.length;
+  if (!a2.length) return a.length;
+  const m = a.length;
+  const n = a2.length;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === a2.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+function maxFuzzyDistance(tokenLen: number): number {
+  if (tokenLen <= 3) return 0;
+  if (tokenLen <= 5) return 1;
+  return 2;
+}
+
+function bestTokenDistance(token: string, words: string[]): number {
+  let best = Infinity;
+  for (const w of words) {
+    if (Math.abs(w.length - token.length) > 2) continue;
+    const d = levenshtein(token, w);
+    if (d < best) best = d;
+    if (best === 0) return 0;
+  }
+  return best;
 }
 
 function findEmployeeRow(empRows: Row[], query: string): Row | null {
@@ -456,10 +560,20 @@ function findEmployeeRow(empRows: Row[], query: string): Row | null {
   let best: { row: Row; score: number } | null = null;
   for (const row of empRows) {
     const rowText = normalize(row.items.map((i) => i.str).join(' '));
+    const rowWords = rowText.split(/\s+/).filter(Boolean);
     let score = 0;
     if (rowText.includes(q)) score += 100;
     for (const t of tokens) {
-      if (rowText.includes(t)) score += 10;
+      if (rowText.includes(t)) {
+        score += 10;
+        continue;
+      }
+      const maxDist = maxFuzzyDistance(t.length);
+      if (maxDist === 0) continue;
+      const dist = bestTokenDistance(t, rowWords);
+      if (dist <= maxDist) {
+        score += dist === 1 ? 6 : 3;
+      }
     }
     if (score === 0) continue;
     if (!best || score > best.score) best = { row, score };
@@ -492,11 +606,13 @@ function findColumnForX(ranges: ColumnRange[], x: number): ColumnRange | undefin
 }
 
 function normalizeTime(t: string): string {
-  return t.replace('.', ':');
+  return t
+    .replace(/[.\-](\d{2})$/, ':$1')
+    .replace(/:06$/, ':00');
 }
 
 function isValidClock(time: string): boolean {
-  const m = time.match(/^(\d{1,3})[:.](\d{2})$/);
+  const m = time.match(/^(\d{1,3})[:.\-](\d{2})$/);
   if (!m) return false;
   const h = parseInt(m[1], 10);
   const mm = parseInt(m[2], 10);
@@ -508,10 +624,13 @@ function parseCellText(text: string): {
   timeRange?: string;
   rawCode?: string;
 } {
-  const trimmed = text.trim();
-  if (!trimmed) return { status: 'off', rawCode: '' };
+  const rawTrim = text.trim();
+  if (!rawTrim) return { status: 'off', rawCode: '' };
 
-  if (!/[a-zA-Z0-9]/.test(trimmed)) return { status: 'off', rawCode: '' };
+  if (!/[a-zA-Z0-9]/.test(rawTrim)) return { status: 'off', rawCode: '' };
+
+  // Tesseract a veces lee 09:00 como 09-00. Normalizar HH-MM aislado a HH:MM.
+  const trimmed = rawTrim.replace(/(^|\s)(\d{1,2})-(\d{2})(?=\s|$)/g, '$1$2:$3');
 
   const strict = [...trimmed.matchAll(/(\d{1,2}[:.]\d{2})\s*[-–—]\s*(\d{1,2}[:.]\d{2})/g)];
   const strictValid = strict.filter((m) => isValidClock(m[1]) && isValidClock(m[2]));
@@ -536,6 +655,8 @@ function parseCellText(text: string): {
   if (/\bVAC\b/.test(upper)) return { status: 'vacation', rawCode: 'VAC' };
   if (/ENFE/.test(upper)) return { status: 'sick', rawCode: 'Enfe' };
   if (/\bDL\b/.test(upper)) return { status: 'off', rawCode: 'DL' };
+  // OCR a veces pierde la L de DL y deja solo "D" suelto (o "Dd"/"DI" mal leído).
+  if (/^D[A-Z]?$/.test(upper)) return { status: 'off', rawCode: 'DL' };
 
   if (validTimes.length === 1) {
     return { status: 'other', rawCode: validTimes[0] };
@@ -708,7 +829,12 @@ function extractEmployeeFromRow(
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
-  const name = rawName.replace(/^\d+\s*/, '').trim() || rawName;
+  const cleanedTokens = nameItems
+    .map((i) => i.str.replace(/^[^A-Za-zÀ-ÿ]+/, '').replace(/[^A-Za-zÀ-ÿ]+$/, '').trim())
+    .filter((s) => s.length >= 2)
+    .filter((s) => !/\d/.test(s))
+    .filter((s) => /[A-Za-zÀ-ÿ]/.test(s));
+  const name = cleanedTokens.join(' ').replace(/\s+/g, ' ').trim() || rawName;
 
   const tailItems = band.filter((i) => i.x + i.width / 2 >= totalLeft);
   const tailText = tailItems
@@ -793,10 +919,28 @@ export function parseSchedule(items: PositionedText[], query: string): WeekSched
       }
       text = text.replace(/Hor\.?\s*Real/i, '').trim();
       if (!text) continue;
+      const numMatch = text.match(/\b(\d{1,2})\b/);
+      if (!numMatch) continue;
+      const dayNum = parseInt(numMatch[1], 10);
+      if (dayNum < 1 || dayNum > 31) continue;
       const cx = item.x + item.width / 2;
       const range = findColumnForX(ranges, cx);
       if (!range) continue;
-      datesByPos[range.position] = ((datesByPos[range.position] ?? '') + ' ' + text).trim();
+      datesByPos[range.position] = String(dayNum);
+    }
+  }
+
+  const known: Array<{ pos: number; num: number }> = [];
+  for (const [posStr, val] of Object.entries(datesByPos)) {
+    known.push({ pos: parseInt(posStr, 10), num: parseInt(val, 10) });
+  }
+  known.sort((a, b) => a.pos - b.pos);
+  if (known.length >= 1) {
+    for (const col of header.columns) {
+      if (datesByPos[col.position]) continue;
+      const anchor = known[0];
+      const guess = anchor.num + (col.position - anchor.pos);
+      if (guess >= 1 && guess <= 31) datesByPos[col.position] = String(guess);
     }
   }
 
